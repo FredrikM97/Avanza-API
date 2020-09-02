@@ -1,9 +1,8 @@
 import sys
 import requests
-from datetime import datetime
 import re
 import time
-import logging
+from client import client_logger
 import json
 
 KEYPATTERN = re.compile("<dt><span>(.+?)<\/span><\/dt>", flags=re.DOTALL | re.UNICODE)
@@ -66,7 +65,7 @@ class Avanza():
     forumUrl = f'{site}/placera/forum/forum'
     forumStartUrl = f'{site}/placera/forum/start.'
     forumPageLimit = f'{site}/forum/user-preferences/posts-per-page'
-
+    request_timeout = 20
     def __init__(self, client):
         self.pageLimit = 15 # Still not working with 200
         self.db = client
@@ -89,174 +88,17 @@ class Avanza():
         startIndex = post.find(startTag, index) + len(startTag)
         endIndex = post.find(endTag, startIndex)
         
-        if startIndex < len(startTag): 
-            logging.debug(f"Could not find any data between tags result: -1")
-            return None, None # If not found
+        if startIndex < len(startTag): return None, None
 
         return post[startIndex:endIndex], endIndex
-        
-    def addPost(self, post:dict):
-        "Store user, company and post to the database if they do not exist"
-        
-        stockID, stockName = self.scrapeCompanyId(post) 
-        r = self.db.add({
-            'Table':'post', 
-            'user_id':post['USERID'], 
-            'user_name':post['USERNAME'],
-            'forum_name':post['FORUMID'], 
-            'stock_id':stockID, 
-            'stock_name':stockName,
-            'post_id':post['ID'],
-            'company_id':post['FORUMID'], 
-            'time':post['TIME'], 
-            'topic':post['TOPIC'], 
-            'text':post['TEXT'] 
-            })      
-
-        
-        if r.status_code < 300:
-            return 'OK'
-        return 'FAIL'
-
-    def addStockInfo(self,forum_name:str, stockID:str, stockName:str, currency:str,companyInfo:dict, **content:dict) -> None:
-        """TODO: Update info if out of date (Based on latest update time)"""
-        # Doesnt handle EUR very well (NEED SALE TO BE DEFINED IN SEK or EURO)
-        if len(companyInfo) == 0: return None
+    
+    def requestContent(self,url):
         try:
-            currency = companyInfo['CURRENCY'] # In order to not remove currency from input 
-        except Exception as e:
-            logging.error(f"Currency in addStockInfo is unknown for {forum_name}")
-        """
-        if 'CURRENCY' in companyInfo:
-            for key in stock_data_keys_ConverterSpecial:
-                try:
-                    companyInfo.update({key:convertCurrency(companyInfo['CURRENCY'],float(companyInfo[key]))})
-                except Exception as e:
-                    logging.debug(f"FAILED converting CURRENCY for {forum_name} key: {key} val: {companyInfo[key]} \n {e}")
-                    companyInfo.update({key:None})
-        """
-    
-        if companyInfo['INTROTIME'] == 'None': companyInfo['INTROTIME'] = None
-        companyContent = {
-            'Table':'company', 
-            'forum_name':forum_name,
-            'short_name':companyInfo['SHORT_NAME'],
-            'intro_time':time.time(),#companyInfo['INTROTIME'],
-            'isin':companyInfo['ISIN'],
-            'market':companyInfo['MARKET'],
-            'industry':companyInfo['INDUSTRY'],
-            'currency':currency,
-            'info_time':time.time()
-        }    
-
-        accountingContent = { 
-            'Table':'accounting', 
-            'forum_name':forum_name,
-            'info_time':companyInfo['INFOTIME'], 
-            'beta':companyInfo['BETA'], 
-            'volatility':companyInfo['VOLATILITY'], 
-            'leverage':companyInfo['LEVERAGE'], 
-            'safety':companyInfo['SAFETY'], 
-            'super_interest':companyInfo['SUPER_INTEREST'] == 'Nej', 
-            'short_sales':companyInfo['SHORT_SALES'] =='Nej', 
-            'shares_cnt':companyInfo['SHARES_CNT'], 
-            'market_cap':companyInfo['MARKET_CAP'], 
-            'yield':companyInfo['YIELD'], # If nej = 0 else 1
-            'pe':companyInfo['PE'], 
-            'ps':companyInfo['PS'], 
-            'pb':companyInfo['PB'], 
-            'rs':companyInfo['RS'], 
-            'gs':companyInfo['GS'], 
-            'es':companyInfo['ES'],
-            'ss':companyInfo['SS'], 
-            'actual_yield':companyInfo['ACTUAL_YIELD'], 
-            'owners':companyInfo['OWNERS'], 
-            'accounting_date':companyInfo['ACCOUNTING_DATE'], 
-            'interest_coverage':companyInfo['INTEREST_COVERAGE'], 
-            'return_on_equity':companyInfo['RETURN_ON_EQUITY'], 
-            'current_ratio':companyInfo['Current_ratio'], 
-            'return_on_total_capital':companyInfo['RETURN_ON_TOTAL_CAPITAL'], 
-            'quick_ratio':companyInfo['QUICK_RATIO'],
-            'change_in_equity':companyInfo['CHANGE_IN_EQUITY'], 
-            'solidity':companyInfo['SOLIDITY'], 
-            'change_in_total_capital':companyInfo['CHANGE_IN_TOTAL_CAPITAL'],
-            'asset_turnover':companyInfo['ASSET_TURNOVER'], 
-            'gross_margin':companyInfo['GROSS_MARGIN'], 
-            'inventory_turnover_rate':companyInfo['INVENTORY_TURNOVER_RATE'], 
-            'operating_margin':companyInfo['OPERATING_MARGIN'], 
-            'accounts_receivable_turnover_rate':companyInfo['ACCOUNTS_RECEIVABLE_TURNOVER_RATE'],
-            'net_margin':companyInfo['NET_MARGIN'], 
-            'share_of_distributed_profit':companyInfo['SHARE_OF_DISTRIBUTED_PROFIT'], 
-        }   
-        companyContent = goInsideRabbitHole(companyContent, forum_name)  
-        accountingContent = goInsideRabbitHole(accountingContent, forum_name)
-        
-        self.sendBatch([accountingContent,companyContent])
-
-    def addStockOrders(self,forum_name:str, stockID:str, stockName:str, currency:str, companyInfo:dict, **content:dict) -> None:
-        if companyInfo is None:  return
-        order_time = datetime.today().strftime('%Y-%m-%d') + " "+ companyInfo['ORDER_TIME']
-        order_time = time.mktime(time.strptime(order_time, '%Y-%m-%d %H:%M:%S'))
-
-        if order_time: # TODO convert currency
-            orderContent = {
-                'Table':'order', 
-                'forum_name':forum_name,
-                'info_time':order_time,
-                'dev_procent':companyInfo['ORDER_DEV'], 
-                'dev_sek':companyInfo['ORDER_DEV_SEK'].split(" ")[0], 
-                'buy':companyInfo['ORDER_BUY'], 
-                'sell':companyInfo['ORDER_SELL'], 
-                'latest':companyInfo['ORDER_LATEST'], 
-                'highest':companyInfo['ORDER_HIGHEST'], 
-                'lowest':companyInfo['ORDER_LOWEST'], 
-                'volume':companyInfo['ORDER_AMOUNT'],     
-            }
-        orderContent = goInsideRabbitHole(orderContent, forum_name)
-
-        self.sendBatch([orderContent, {
-                'Table':'company',
-                'forum_name':forum_name,
-                'order_time':time.time()
-            }])
-
-    def sendCalenderInfo(self,forum_name:str, companyInfo:dict, **content:dict) -> None:
-        companyInfo = goInsideRabbitHole(companyInfo, forum_name)
-
-        for eventtime in companyInfo:
-            key_time = convertTime(eventtime, resolution='DAY')
-            if isinstance(companyInfo[eventtime], dict): # Assume  there is just two items
-                r = self.db.add({
-                    'Table':'calender', 
-                    'forum_name': forum_name,
-                    'distribution_share':companyInfo[eventtime]['DISTRIBUTION_SHARE'].split(" ")[0],
-                    'distribution_deadline': companyInfo[eventtime]['DISTRIBUTION_DEADLINE'],
-                    'event':'Utdelning',
-                    'info_time':key_time
-                })
-                return 'OK'
-            r = self.db.add({
-                'Table':'calender', 
-                'forum_name': forum_name,
-                'event':str(companyInfo[eventtime]),
-                'info_time':key_time
-            })
-
-            logging.debug(f"Adding Calender response : {r.status_code}")
-    
-
-    def addGraphInfo(self, params) -> None:
-        """
-        Get information from scrapeGraph and combine new graph data with existing in database
-        Params
-            COMPANYID: ID of company
-            STOCKID: ID for company stocks
-            resolution: Can be defined as MINUTE, HOUR, DAY, MONTH
-            timePeriod: Can be defined as day, week, month, year
-        """
-        
-        logging.debug(f"Adding Graph response : {r.status_code}")
-        return 'OK'
+            content = self.session.get(url, timeout=self.request_timeout)
+            if content != None: return content.content.decode('utf-8')
+        except:
+            pass
+        raise Exception(f"Website does not exist or request timed out! Url: {url}!")
 
     def getPost(self, massiveString:str, postID:int):
         "Get the data from a specific userpost"
@@ -274,8 +116,8 @@ class Avanza():
         massiveString, newPageIndex = self.nextPage(index)
         cntPages,_ = self.findWithTags(massiveString, '<span class="bold">1/', '</span>', index=0)
         return cntPages,newPageIndex
-    
-    def scrapeForum(self, pageIndex:int=0, lastDBPost=0, batch_size=50) -> None:
+
+    def scrapeForum(self, pageIndex:int=0, lastDBPost=0) -> None:
         """
         Scrape forum, collect the posts and metadata and update database.
 
@@ -283,58 +125,28 @@ class Avanza():
             pageIndex: Which page the scrape should start on the forum
             fullRun: If the forum shall run all posts or run till last seen in db
         """
-        self.batch = []
-        def commitPost(post):
-            #print("Starting batch of commit", len(self.batch))
-            stockID, stockName = self.scrapeCompanyId(post) 
-            postContent = {
-                            'Table':'post', 
-                            'user_id':post['USERID'], 
-                            'user_name':post['USERNAME'],
-                            'forum_name':post['FORUMID'], 
-                            'stock_id':stockID, 
-                            'stock_name':stockName,
-                            'post_id':post['ID'],
-                            'company_id':post['FORUMID'], 
-                            'time':post['TIME'], 
-                            'topic':post['TOPIC'], 
-                            'text':post['TEXT'] 
-                    }
-            self.batch.append(postContent)
-
+        
         startTag = '<tr class="forumPyjamasRow">'
         endTag = '</tr>'
         endIndex = 0
         post = {'TIME': time.time()}
         massiveString, pageIndex = self.nextPage(pageIndex)
-        batch_size = batch_size
-        while lastDBPost <= post['TIME']:
+        batch = []
+
+        while True:
+            
             tagData, endIndex = self.findWithTags(massiveString, startTag, endTag, index=endIndex)
-
-            if tagData is None: 
-                # At end of page send batch
-                endIndex = 0
-                massiveString, pageIndex = self.nextPage(pageIndex)
-
-                continue
+            if tagData is None: break
 
             postMeta = self.scrapePost(tagData)
             post = {'TEXT':self.getPost(massiveString, postMeta['ID'])}
             post.update(postMeta)
-            print(f"Adding post {post['ID']}!")
-            logging.debug(f"Added Post: {post['ID']} to DB")
-
-            # TODO: This part should be threaded...
-            if len(self.batch) > batch_size:
-                self.batch = self.sendBatch(self.batch)
-            else: 
-                self.db.threader(commitPost, post)
-
-        self.sendBatch(self.batch)
-        logging.info("Finished scraping Forum!")
-        #return post
+            if lastDBPost > post['TIME']: return batch, True
+            batch.append(post)
+            
+            client_logger.debug(f"Added Post: {post['ID']} to batch")
+        return batch, False
         
-
     def scrapePost(self, post:str):
         "Scrape overview data from each post"
 
@@ -356,12 +168,11 @@ class Avanza():
 
     def scrapeCompanyId(self, post:dict) -> (int,str):
         "Extract id of company if ID exists otherwise it returns None"
-        x = requests.get(f"{self.forumUrl}/{post['FORUMID']}.html")
-        massiveString = x.content.decode('utf-8')
+        massiveString = self.requestContent(f"{self.forumUrl}/{post['FORUMID']}.html")
 
         companyInfo, _ = self.findWithTags(massiveString, '<a href="/handla/aktier.html/kop/', '" title="', index=0)
         
-        if companyInfo is None: return None,None
+        if companyInfo is None: raise Exception(f"Could not find company id or company name FORUMID: {post['FORUMID']}")
         companyID, companyName=companyInfo.split('/')
 
         return int(companyID), companyName
@@ -370,13 +181,10 @@ class Avanza():
         """
         Extract information of company, 
         """
-        if not stockID: 
-            logging.debug(f"StockID is empty - Abort scrape of StockInfo for: {forum_name}")
-            return None
+        if not stockID: raise Exception(f"StockID is empty - Abort scrape of StockInfo for: {forum_name}")
 
         companyInfo = {}
-        siteData = self.session.get(f'{self.stockUrl}/{str(stockID)}/{stockName}')
-        massiveString = siteData.content.decode('utf-8')
+        massiveString = self.requestContent(f'{self.stockUrl}/{str(stockID)}/{stockName}')
 
         content_tags = {
             'ORDER_DEV':('<span class="XSText">Utv. idag %<br/>','</span>'),
@@ -409,7 +217,7 @@ class Avanza():
             companyInfo.update({'INFOTIME':timeInfo})
             return companyInfo
         except Exception as e:
-            logging.error(f"Could not download stock info for: {forum_name} Error: {e}")
+            client_logger.error(f"Could not download stock info for: {forum_name} Error: {e}")
             return {}
         
     def scrapeStockAccounting(self, forum_name:str, stockID:str, stockName:str) -> dict:
@@ -417,14 +225,11 @@ class Avanza():
         Accounting data of company
         """
 
-        if not stockID: 
-            logging.debug(f"StockID is empty - Abort scrape of Accounting for: {companyID}")
-            return None
+        if not stockID: raise Exception(f"StockID is empty - Abort scrape of Accounting for: {forum_name}")
 
 
         companyInfo = {}
-        siteData = self.session.get(f'{self.stockAccountingUrl}/{str(stockID)}/{stockName}')
-        massiveString = siteData.content.decode('utf-8')
+        massiveString = self.requestContent(f'{self.stockAccountingUrl}/{str(stockID)}/{stockName}')
 
         # Nyckeltal / KEY_FIGURES
         key_figures_Tags = {
@@ -443,25 +248,25 @@ class Avanza():
 
             startTag, endTag = ('<dt>Introdatum</dt>', '</dl>')
             content, endIndex = self.findWithTags(massiveString, startTag, endTag, index=0)
-
-            companyInfo.update({'INTROTIME':convertTime(*VALSPATTERN2.findall(content), resolution='DAY')})
+            try:
+                companyInfo.update({'INTROTIME':convertTime(*VALSPATTERN2.findall(content), resolution='DAY')})
+            except Exception as e:
+                client_logger.error(f"Company: {forum_name}! Error: {e}. INTROTIME replaced with 0")
+                companyInfo.update({'INTROTIME':0})
 
             return companyInfo
         except Exception as e:
-            logging.error(f"Could not download accounting data for: {forum_name} Error: {e}")
+            client_logger.error(f"Could not download accounting data for: {forum_name} Error: {e}")
             return {}
-            
+
     def scrapeCalenderEvents(self, forum_name:str, stockID:str, stockName:str) -> dict:
         """
         Events happening on the company
         """
-        if not stockID: 
-            logging.debug(f"StockID is empty - Abort scrape of CalenderEvents for: {forum_name}")
-            return None
+        if not stockID: raise Exception(f"StockID is empty - Abort scrape of CalenderEvents for: {forum_name}")
 
         companyInfo = {}
-        siteData = self.session.get(f'{self.stockAccountingUrl}/{str(stockID)}/{stockName}')
-        massiveString = siteData.content.decode('utf-8')
+        massiveString = self.requestContent(f'{self.stockAccountingUrl}/{str(stockID)}/{stockName}')
         
         # Company Calender (kommande och tidigare -> händelse, tid)
         
@@ -475,6 +280,7 @@ class Avanza():
         }
         diff_distribution_names = ['Distribution av värdepapper', 'Ordinarie utdelning', 'Bonusutdelning']
         endIndex = 0
+        calenderInfo = {}
         for key, item in calender_Tags.items():
             startTag, endTag = item 
             content, endIndex = self.findWithTags(massiveString, startTag, endTag, index=endIndex)
@@ -484,7 +290,7 @@ class Avanza():
             keys = KEYPATTERN.findall(content)
             vals = VALSPATTERN.findall(content)
 
-            calenderInfo = dict(zip(keys,vals))
+            calenderInfo.update(dict(zip(keys,vals)))
             
             for key, val in zip(keys,vals):
                 for special_dist in diff_distribution_names:
@@ -497,10 +303,23 @@ class Avanza():
                             #calenderInfo.pop(key)
                             tempDict.update({key1:content})
                         calenderInfo.update({key:tempDict})
-
-            self.sendCalenderInfo(forum_name,calenderInfo)
-        #return calenderInfo
+           
+        return calenderInfo
     
+    def scrapeCompanyURL(self):
+        """
+        Return all stock id's and stock names from avanza
+        """
+        content = []
+        url = self.site + "/sitemap1.xml"
+        massiveString = self.requestContent(url)
+        searchString = re.compile('<loc>.+?om-aktien.html\/(.+?)\/(.+?)<\/loc>', flags=re.DOTALL | re.UNICODE)
+
+        # Return list with stockID and stockName
+        massiveList = searchString.findall(massiveString)
+
+        return massiveList
+
     def scrapeNews(self):
         pass
     
@@ -516,9 +335,7 @@ class Avanza():
 
         Return: Dictionary containing datapoints for company stock value and OMXS30.
         """
-        if not stockID: 
-            logging.debug("StockID is empty")
-            return None
+        if not stockID: raise Exception(f"StockID is empty - Abort scrape of Graph for: {forum_name}")
 
         orderbook_request = {
             "orderbookId":stockID,
@@ -535,14 +352,11 @@ class Avanza():
         }
         p = requests.post(self.orderbookURL, json=orderbook_request)
     
-        if p.status_code != 200:
-            logging.error(f"Wrong status code! Code: {p.status_code} Input: {stockID} {resolution} {timePeriod}")
-            return None
-        if p.json() is None: 
-            print(f"No data was gathered from site: {stockID}!")
-            return None
+        if p.status_code != 200: raise Exception(f"Wrong status code! Code: {p.status_code} Input: {stockID} {resolution} {timePeriod}")
+        if p.json() is None: raise Exception(f"No data was gathered from site: {stockID}!")
         
-        self.sendBatch([{
+
+        return [{
                 'Table':'graph',
                 'forum_name':forum_name,
                 'graph':p.json()['dataPoints']
@@ -551,8 +365,8 @@ class Avanza():
                 'forum_name':forum_name,
                 'graph_time':time.time()
             }
-        ])
-        
+        ]
+  
     def nextPage(self, pageIndex:int) -> (str, int):
         """
         Move to a new page based pageIndex and number of posts on the site
@@ -565,67 +379,17 @@ class Avanza():
             newPage: Number at which the new side will be on
 
         """
-        x = self.session.get(self.forumStartUrl + str(pageIndex) + ".html")
-        massiveString = x.content.decode('utf-8')
-        newPageIndex = pageIndex + self.pageLimit
-        logging.debug(f"New pageIndex at: {newPageIndex} old data: {pageIndex} {self.pageLimit}")
+        massiveString = self.requestContent(self.forumStartUrl + str(pageIndex*self.pageLimit) + ".html")
+        newPageIndex = pageIndex + 1
+        client_logger.debug(f"New pageIndex at: {newPageIndex} old data: {pageIndex} {self.pageLimit}")
         return massiveString, newPageIndex
 
 def convertTime(postTime:str, resolution='MINUTE') -> int:
     "Converts time date time to unix time"
-    try:
-        if resolution == 'MINUTE':
-            return time.mktime(time.strptime(postTime, '%Y-%m-%d %H:%M')) 
-        if resolution == 'DAY':
-            return time.mktime(time.strptime(postTime, '%Y-%m-%d')) 
 
-    except Exception as e:
-        logging.debug(f"Could not convert time: '{postTime}'")
-        return None
+    if resolution == 'MINUTE':
+        return time.mktime(time.strptime(postTime, '%Y-%m-%d %H:%M')) 
+    if resolution == 'DAY':
+        return time.mktime(time.strptime(postTime, '%Y-%m-%d')) 
 
-def convertCurrency(currency:str, amount:int) -> int:
-    """
-    Convert a currency into SEK. Python 3.7<
-    Params
-        currency: Specified currency in string. Example: EUR, SEK, NOR
-        amount: The amount of money to be converted
-    """
-    
-    if currency == 'SEK': return amount
-    logging.debug(f"Convert {amount} from {currency} to SEK")
-    return CurrencyConverter().convert(amount,currency,'SEK')
-
-def localTokenRemover(content, key, companyID='Unknown') -> str:
-    """
-    Remove unwanted syntax from string
-    """
-    if content == '-' or content == None: 
-        logging.debug(f"Contained invalid token: '{content}' for Company: {companyID} key: {key} ")
-        return None
-    
-    # TODO needs to contain all possible currencies :(
-    #"SEK", "NOK", "EUR", "USD","CAD",
-    token_to_remove = ["%", "+", "<br />", u"\xa0", "\r", "\n","\t"]
-
-    for curr in token_to_remove:
-        content = content.replace(curr,"")
-
-    content = content.replace(u',',u'.').strip()
-
-    return content
-            
-def goInsideRabbitHole(post:str, companyID:str) -> str:
-    """
-    Recursive deepening of dictionary or list in order to reduce unwanted syntaxes
-    """
-    for key, post_content in post.items():
-        if type(post_content) == dict or type(post_content) == list: 
-            post_content = goInsideRabbitHole(post_content, companyID)
-            continue
-            
-        post[key] = localTokenRemover(str(post_content), key, companyID)
-    return post
-
-def printProgress(index:int) -> None:
-    "Print progress based on index value"
-    if index % 100 == 0 and index != 0: logging.info(f"Progress: {index}")
+    raise Exception(f"Could not convert time: '{postTime}' Resolution '{resolution}")
